@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>感染性休克临床数据收集表</title>
+<style>
+  :root{--bg:#f7fafc;--card:#fff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--accent:#0ea5e9;--ok:#10b981;--err:#ef4444;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Noto Sans SC",sans-serif}
+  .container{max-width:1200px;margin:0 auto;padding:22px}
+  h1{font-size:22px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:13px}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
+  button{border:0;border-radius:10px;padding:9px 14px;background:#111;color:#fff;cursor:pointer}
+  button.secondary{background:#e5e7eb;color:#111}
+  button.ok{background:var(--ok)} button.blue{background:var(--accent)}
+  .status{font-size:13px;color:#374151;margin:6px 0 14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;margin:14px 0;overflow:hidden}
+  .card header{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer}
+  .card header h2{margin:0;font-size:16px}
+  .hint{color:var(--muted);font-size:12px}
+  .grid{display:grid;gap:12px;padding:0 14px 14px}
+  @media (min-width:760px){.grid{grid-template-columns:repeat(2, minmax(0,1fr));}}
+  @media (min-width:1024px){.grid{grid-template-columns:repeat(3, minmax(0,1fr));}}
+  label{display:flex;flex-direction:column;gap:6px}
+  label span{font-size:13px}
+  input,select,textarea{padding:9px 10px;border:1px solid var(--border);border-radius:10px;font-size:14px}
+  textarea{min-height:44px}
+  .fold{display:none}
+  .tip{font-size:12px;color:var(--muted);margin:4px 0 0}
+  .badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>感染性休克临床数据收集表</h1>
+  <div class="sub">每行=患者×时间点(T0/T1/T2/补采)×监测方式(有创/无创)；同一时间点有创与无创尽量≤15分钟内成对测量。</div>
+
+  <div class="toolbar">
+    <button id="save">保存草稿</button>
+    <button id="clear" class="secondary">清空</button>
+    <button id="submit" class="ok">提交（或下载CSV）</button>
+    <button id="download" class="blue">仅下载CSV</button>
+  </div>
+  <div id="status" class="status"></div>
+
+  <div id="formRoot"></div>
+
+  <div class="sub" style="margin-top:6px">
+    若未配置 SUBMIT_URL，点击“提交（或下载CSV）”会自动下载 CSV。日期：YYYY-MM-DD；时间戳：YYYY-MM-DD HH:MM（24h）。缺失填 NA，并在“缺失说明”注明原因。
+  </div>
+</div>
+
+<script>
+// ===== 配置：把你的 HTTPS 接口地址贴到这里（留空则下载CSV） =====
+const SUBMIT_URL = ""; // 例如：https://script.google.com/macros/s/XXXX/exec
+
+// 列头（导出CSV字段顺序）
+const COLS = [
+  "patient_id","sex","age","admission_source","bmi","bsa","smoking","alcohol","comorbidities","cci","consent_date",
+  "sofa","apache2","qsofa","news2","shock_confirm_time","timepoint","trigger_event",
+  "hr","rr","spo2","temp","urine_rate","mech_vent","vasopressors","ne_equiv","fluid_24h","fluid_adj","pressors_adj","decision_ts",
+  "lactate","pct","crp","wbc","hbp","creatinine","bilirubin","platelet","hgb","ph","be","pafi_or_sofi",
+  "monitor_type","map","sv","co","ci","svv","ppv","svr","svri","measure_ts",
+  "deteriorate_48h","survive_28d","icu_los","mv_days","complications","cost","threshold_event","missing_note"
+];
+
+// 编码选项
+const SELECTS = {
+  sex: ["","1(男)","2(女)"],
+  admission_source: ["","1(门诊)","2(急诊)","3(转诊)","4(其他)"],
+  smoking: ["","1(是)","2(否)"],
+  alcohol: ["","1(是)","2(否)"],
+  mech_vent: ["","1(是)","2(否)"],
+  timepoint: ["","T0","T1","T2","补采"],
+  trigger_event: ["","0(无)","1(液体复苏)","2(升压药上调)","3(MAP<65≥15min)","4(乳酸>2)"],
+  fluid_adj: ["","1(是)","2(否)"],
+  pressors_adj: ["","1(是)","2(否)"],
+  monitor_type: ["","1(有创)","2(无创)"],
+  deteriorate_48h: ["","1(是)","2(否)"],
+  survive_28d: ["","1(存活)","2(死亡)"],
+  threshold_event: ["","0(无)","1(MAP<65)","2(乳酸>2)","3(SVV>13%)"]
+};
+
+// UI分组（仅展示）
+const GROUPS = [
+  {title:"一、标识与基线（T0填写，其他时间点可留空）", keys:["patient_id","sex","age","admission_source","bmi","bsa","smoking","alcohol","comorbidities","cci","consent_date","sofa","apache2","qsofa","news2","shock_confirm_time"], open:true},
+  {title:"二、时间点信息", keys:["timepoint","trigger_event"], open:true},
+  {title:"三、生命体征与治疗", keys:["hr","rr","spo2","temp","urine_rate","mech_vent","vasopressors","ne_equiv","fluid_24h","fluid_adj","pressors_adj","decision_ts"], open:true},
+  {title:"四、化验/血气", keys:["lactate","pct","crp","wbc","hbp","creatinine","bilirubin","platelet","hgb","ph","be","pafi_or_sofi"], open:false},
+  {title:"五、血流动力学监测（成对测量）", keys:["monitor_type","map","sv","co","ci","svv","ppv","svr","svri","measure_ts"], open:false},
+  {title:"六、结局与阈值（建议仅T0填写）", keys:["deteriorate_48h","survive_28d","icu_los","mv_days","complications","cost","threshold_event","missing_note"], open:false}
+];
+
+// 状态
+const state = (()=>{ const cache = localStorage.getItem("sepsis_longform_cache_v1"); return cache ? JSON.parse(cache) : Object.fromEntries(COLS.map(k=>[k,""])); })();
+
+function setStatus(msg){ document.getElementById("status").textContent = msg; }
+
+function createInput(key){
+  const wrap = document.createElement("label");
+  const title = document.createElement("span");
+  title.innerHTML = key + (["patient_id","timepoint","monitor_type","measure_ts"].includes(key) ? ' <span class="badge">常用</span>' : "");
+  wrap.appendChild(title);
+
+  if(SELECTS[key]){
+    const sel = document.createElement("select");
+    sel.setAttribute("data-name", key);
+    SELECTS[key].forEach(v=>{
+      const op = document.createElement("option");
+      op.value = v ? v.split("(")[0] : "";
+      op.textContent = v;
+      sel.appendChild(op);
+    });
+    sel.value = state[key] || "";
+    sel.onchange = e=>{ state[key]=e.target.value; saveDraftSilent(); };
+    wrap.appendChild(sel);
+    return wrap;
+  }
+
+  const isTextarea = ["comorbidities","vasopressors","complications","missing_note"].includes(key);
+  const el = isTextarea ? document.createElement("textarea") : document.createElement("input");
+  el.setAttribute("data-name", key);
+
+  if(/date$/.test(key)){ el.placeholder = "YYYY-MM-DD"; }
+  else if(/time|ts$|_time$|measure_ts|shock_confirm_time|decision_ts/.test(key)){ el.placeholder = "YYYY-MM-DD HH:MM"; }
+  else if(/age|bmi|bsa|hr|rr|spo2|temp|urine_rate|ne_equiv|fluid_24h|lactate|pct|crp|wbc|hbp|creatinine|bilirubin|platelet|hgb|ph|be|pafi_or_sofi|map|sv|co|ci|svv|ppv|svr|svri|icu_los|mv_days|cost/.test(key)){ el.type="number"; el.step="any"; }
+  else { el.type="text"; }
+
+  el.value = state[key] || "";
+  el.oninput = e=>{ state[key]=e.target.value; saveDraftSilent(); };
+  wrap.appendChild(el);
+
+  if(key==="patient_id"){ const tip=document.createElement("div"); tip.className="tip"; tip.textContent="示例：THH-2025-001（患者唯一ID）"; wrap.appendChild(tip); }
+  if(key==="timepoint"){ const tip=document.createElement("div"); tip.className="tip"; tip.textContent="T0=入ICU后0–6h；T1/T2=复评；补采=触发后加测"; wrap.appendChild(tip); }
+  if(key==="measure_ts"){ const tip=document.createElement("div"); tip.className="tip"; tip.textContent="与同一时间点另一监测方式尽量≤15分钟"; wrap.appendChild(tip); }
+
+  return wrap;
+}
+
+function buildSection(title, keys, open){
+  const card = document.createElement("div"); card.className="card";
+  const head = document.createElement("header");
+  const h2 = document.createElement("h2"); h2.textContent = title;
+  const hint = document.createElement("div"); hint.className="hint"; hint.textContent = open ? "" : "点击展开";
+  head.appendChild(h2); head.appendChild(hint);
+  const body = document.createElement("div"); body.className="grid" + (open ? "" : " fold");
+  head.onclick = ()=>{ body.classList.toggle("fold"); hint.textContent = body.classList.contains("fold")? "点击展开" : ""; };
+  keys.forEach(k=> body.appendChild(createInput(k)));
+  card.appendChild(head); card.appendChild(body);
+  return card;
+}
+
+function render(){ const root = document.getElementById("formRoot"); root.innerHTML=""; GROUPS.forEach(g=> root.appendChild(buildSection(g.title,g.keys,g.open))); }
+render();
+
+function headersAndRow(){
+  const headers = COLS;
+  const values = headers.map(k => (state[k]??"").toString().replace(/\n/g," "));
+  return { headers, values };
+}
+function toCSV(){ const {headers, values} = headersAndRow(); return headers.join(",") + "\n" + values.join(","); }
+
+function downloadCSV(){
+  const csv = toCSV();
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (state["patient_id"] || "未命名") + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function saveDraft(){ localStorage.setItem("sepsis_longform_cache_v1", JSON.stringify(state)); setStatus("已保存到本机（localStorage）。"); }
+function saveDraftSilent(){ localStorage.setItem("sepsis_longform_cache_v1", JSON.stringify(state)); }
+
+async function submit(){
+  if(!state["patient_id"]) { setStatus("❗请填写 patient_id"); return; }
+  if(!state["timepoint"]) { setStatus("❗请选择 timepoint"); return; }
+  if(!state["monitor_type"]) { setStatus("❗请选择 monitor_type"); return; }
+  if(!state["measure_ts"]) { setStatus("❗请填写 measure_ts"); return; }
+  setStatus("正在提交...");
+  if(!SUBMIT_URL){ setStatus("未配置提交地址。已为你下载 CSV 备份。"); downloadCSV(); return; }
+  if(location.protocol === "https:" && !SUBMIT_URL.startsWith("https://")){ setStatus("⚠ 当前页面为 https，但提交地址非 https，将被拦截。"); return; }
+  try{
+    const res = await fetch(SUBMIT_URL, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({sheet:"长表", data: state}) });
+    if(!res.ok) throw new Error("网络错误或服务器未就绪");
+    const out = await res.json().catch(()=>({ok:true}));
+    setStatus("✅ 提交成功" + (out?.message? "：" + out.message : ""));
+  }catch(e){
+    setStatus("提交失败：" + e.message + "。已为你下载 CSV 作为备份。");
+    downloadCSV();
+  }
+}
+
+document.getElementById("save").onclick = saveDraft;
+document.getElementById("clear").onclick = ()=>{
+  if(confirm("确定清空当前表单？")){
+    COLS.forEach(k=> state[k]="");
+    document.querySelectorAll("[data-name]").forEach(el=> el.value="");
+    localStorage.removeItem("sepsis_longform_cache_v1");
+    setStatus("表单已清空。");
+  }
+};
+document.getElementById("submit").onclick = submit;
+document.getElementById("download").onclick = downloadCSV;
+</script>
+</body>
+</html>
